@@ -111,6 +111,32 @@ func hasSub(msgs [][]byte, sub byte) bool {
 	return false
 }
 
+func TestGuildCreateUsesHighProfanityFilter(t *testing.T) {
+	f := newGroupFixture(t, "Founder")
+	gh := NewGuildHandler(f.sm)
+	gh.SetGameWorld(f.world)
+	founder := f.p["Founder"]
+	founder.ProfanityFilterOff = true
+
+	for _, name := range []string{"Order of ASS", "The-ShItstorm", "The " + "k" + "ikes"} {
+		gh.HandleGuildCommand(f.sess["Founder"], guildCmd(guildCmdCreate, wideb(name)))
+		if f.world.GuildOf(founder) != nil || founder.GuildID != 0 {
+			t.Fatalf("created a guild with a name that High would mask: %q", name)
+		}
+		r := open(t, lastOf(f.take("Founder"), protocol.OpcodeErrorMessage), protocol.OpcodeErrorMessage)
+		if got := r.wide(1024); got != "That guild name contains a word blocked by the chat filter." {
+			t.Errorf("rejection message: %q", got)
+		}
+		r.done(t)
+	}
+
+	const cleanName = "Cockatrice Riders"
+	gh.HandleGuildCommand(f.sess["Founder"], guildCmd(guildCmdCreate, wideb(cleanName)))
+	if g := f.world.GuildOf(founder); g == nil || g.Name != cleanName {
+		t.Fatalf("failed to create guild %q after refusals", cleanName)
+	}
+}
+
 func TestGuildLifecycle(t *testing.T) {
 	f := newGroupFixture(t, "Ann", "Bob", "Cam")
 	gh := NewGuildHandler(f.sm)

@@ -194,6 +194,10 @@ func (h *GuildHandler) chatLine(sess *session.Session, p *entity.Player, line ch
 }
 
 func (h *GuildHandler) create(sess *session.Session, p *entity.Player, name string) {
+	if maskProfanity(name) != name {
+		SendErrorMessage(sess, "That guild name contains a word blocked by the chat filter.")
+		return
+	}
 	g, err := h.gameWorld.CreateGuild(name, p)
 	switch err {
 	case nil:
