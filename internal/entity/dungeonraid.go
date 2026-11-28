@@ -3,12 +3,16 @@ package entity
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/eqoa/server/internal/session"
 )
 
 const HeroicRaidBoardName = "Heroic Raids"
 const heroicRaidCap = 10
+
+// raidEntryHold is how long a reserved seat waits for its player to arrive.
+const raidEntryHold = 10 * time.Second
 
 func (d *DungeonDef) heroicRaid() bool {
 	return d.Encounter != "" || strings.EqualFold(d.Via, HeroicRaidBoardName)
@@ -37,20 +41,17 @@ func (w *World) raidPullActiveLocked(in *dungeonInst) bool {
 		(f.phase != mythicStaging || boss.CurrentEnemy != 0 || len(boss.Threats) != 0)
 }
 
-func (w *World) freezeRaidRosterLocked(in *dungeonInst) {
-	if in.raidPull == nil {
-		in.raidPull = w.raidOccupantsLocked(in)
-	}
-}
-
 func (w *World) raidEntryRefusalLocked(in *dungeonInst, char uint32) string {
 	d := &w.dungeons.defs[in.def]
 	if !d.heroicRaid() {
 		return ""
 	}
 	if w.raidPullActiveLocked(in) {
-		w.freezeRaidRosterLocked(in)
-		if !in.raidPull[char] {
+		roster := in.raidPull
+		if roster == nil { // pulled, and the fight's next step saves its roster
+			roster = w.raidOccupantsLocked(in)
+		}
+		if !roster[char] {
 			return fmt.Sprintf("%s is in progress. New players can enter after the pull ends.", d.Name)
 		}
 	}
@@ -63,7 +64,7 @@ func (w *World) raidEntryRefusalLocked(in *dungeonInst, char uint32) string {
 
 func (w *World) setDungeonInstanceLocked(p *Player, in *dungeonInst) {
 	p.Instance = in.id
-	p.raidEntry = 0
+	p.raidEntry, p.raidEntrySeen = 0, time.Time{}
 	d := &w.dungeons.defs[in.def]
 	if d.heroicRaid() && p.World != d.World {
 		p.raidEntry = in.id
@@ -111,6 +112,29 @@ func (w *World) FinishRaidEntry(id EntityID, inst uint32) {
 			p.Instance = 0
 		}
 	}
+}
+
+// raidSeatSettleLocked lets go of a seat reserved for a player on its way in:
+// once it stands in the raid, or after raidEntryHold if it never arrived. A
+// GM's teleport, a board's way back and Return Home move a player without
+// place, so a seat left to raidPlacementLocked alone could stay taken.
+func (w *World) raidSeatSettleLocked(p *Player, now time.Time) {
+	if p.raidEntry == 0 {
+		return
+	}
+	in := w.dungeons.insts[p.raidEntry]
+	if in != nil && (p.Instance != in.id || p.World != w.dungeons.defs[in.def].World) {
+		if p.raidEntrySeen.IsZero() {
+			p.raidEntrySeen = now
+		}
+		if now.Sub(p.raidEntrySeen) < raidEntryHold {
+			return
+		}
+		if p.Instance == in.id {
+			p.Instance = 0
+		}
+	}
+	p.raidEntry, p.raidEntrySeen = 0, time.Time{}
 }
 
 // raidPlacementLocked keeps a raid instance ID only on its own map. A player

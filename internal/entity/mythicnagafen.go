@@ -438,7 +438,7 @@ func mythicThreshold(boss *NPC, k int) int {
 // mythicPullLocked begins the fight. Must be called with the lock held.
 func (w *World) mythicPullLocked(f *mythicFight, now time.Time) {
 	if in := w.dungeons.insts[f.inst]; in != nil {
-		w.freezeRaidRosterLocked(in)
+		in.raidPull = w.raidOccupantsLocked(in)
 	}
 	f.phase = mythicActive
 	f.pulled = now

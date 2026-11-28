@@ -10,6 +10,7 @@ import (
 	"github.com/eqoa/server/internal/database"
 	"github.com/eqoa/server/internal/entity"
 	"github.com/eqoa/server/internal/protocol"
+	"github.com/eqoa/server/internal/session"
 )
 
 func seedHeroicMarkPrerequisites(t *testing.T, db *database.SQLiteDB) {
@@ -175,6 +176,7 @@ func TestHeroicMarksFromTheInstanceCorpse(t *testing.T) {
 			if !warned {
 				t.Fatal("no loot lockout warning before choosing loot")
 			}
+			until := map[uint32]time.Time{r.pa.CharServerID: now.Add(18 * time.Hour), r.pc.CharServerID: now.Add(18 * time.Hour)}
 			if mode.need {
 				if len(rolls) != 4 || corpseItems > 0 {
 					t.Fatalf("expected four separate rolls and no freely lootable marks, got %v and %d", rolls, corpseItems)
@@ -197,23 +199,51 @@ func TestHeroicMarksFromTheInstanceCorpse(t *testing.T) {
 				if len(rolls) != 0 || corpseItems != 4 {
 					t.Fatalf("expected four marks in the corpse window, got %v and %d", rolls, corpseItems)
 				}
-				if err := h.HandleLootAll(r.anna, incoming(protocol.OpcodeLootTakeAll, nil)); err != nil {
-					t.Fatal(err)
-				}
+				takeAll := incoming(protocol.OpcodeLootTakeAll, nil)
 				takeOne := incoming(protocol.OpcodeClientLoot, append(u32b(0), u32b(1)...))
-				if err := h.HandleLootItem(r.anna, takeOne); err != nil {
-					t.Fatal(err)
+				try := func(sess *session.Session, p *entity.Player, how func(*session.Session, *protocol.Message) error,
+					msg *protocol.Message, want int) {
+					t.Helper()
+					if err := how(sess, msg); err != nil {
+						t.Fatal(err)
+					}
+					if pack, err := inv.GetPackItems(p.CharServerID); err != nil || len(pack) != want {
+						t.Fatalf("%s holds %d marks, want %d (%v)", p.Name, len(pack), want, err)
+					}
 				}
+				// the first try warns, a double press does not answer it, and
+				// neither does one long after
+				r.drain()
+				try(r.anna, r.pa, h.HandleLootAll, takeAll, 0)
+				asked := false
+				for _, m := range r.anna.Queue().GetPending() {
+					if data := m.Data(); opOf(data) == protocol.OpcodeColoredChat {
+						line, _ := readWideLine(data[2:])
+						asked = asked || strings.Contains(line, "Loot it again")
+					}
+				}
+				if !asked {
+					t.Fatal("the first try at a mark said nothing of its lockout")
+				}
+				try(r.anna, r.pa, h.HandleLootAll, takeAll, 0)
+				now = now.Add(lootLockoutAskFor + time.Second)
+				try(r.anna, r.pa, h.HandleLootAll, takeAll, 0)
+				now = now.Add(lootLockoutAskLeast)
+				try(r.anna, r.pa, h.HandleLootAll, takeAll, 1)
+				until[r.pa.CharServerID] = now.Add(18 * time.Hour)
+				now = now.Add(2 * time.Second)
+				try(r.anna, r.pa, h.HandleLootItem, takeOne, 1)
 				h.closeLoot(r.anna)
 				if !h.OpenCorpse(r.cora, boss) {
 					t.Fatal("eligible member could not open the corpse")
 				}
-				if err := h.HandleLootItem(r.cora, takeOne); err != nil {
-					t.Fatal(err)
-				}
-				if err := h.HandleLootAll(r.cora, incoming(protocol.OpcodeLootTakeAll, nil)); err != nil {
-					t.Fatal(err)
-				}
+				// the warning is each character's own
+				try(r.cora, r.pc, h.HandleLootItem, takeOne, 0)
+				now = now.Add(lootLockoutAskLeast)
+				try(r.cora, r.pc, h.HandleLootItem, takeOne, 1)
+				until[r.pc.CharServerID] = now.Add(18 * time.Hour)
+				now = now.Add(2 * time.Second)
+				try(r.cora, r.pc, h.HandleLootAll, takeAll, 1)
 			}
 			if corpse := h.loots().corpses[boss.ServerID]; len(corpse.items) != 2 {
 				t.Fatalf("expected two marks left for other eligible players, got %d", len(corpse.items))
@@ -225,7 +255,7 @@ func TestHeroicMarksFromTheInstanceCorpse(t *testing.T) {
 				}
 				lock := lootLockoutFor(pack[0].Pattern.PatternID)
 				expires, err := inv.LootLockoutUntil(p.CharServerID, lock.Key)
-				if err != nil || !expires.Equal(now.Add(18*time.Hour)) {
+				if err != nil || !expires.Equal(until[p.CharServerID]) {
 					t.Fatalf("%s lockout expires at %v (%v)", p.Name, expires, err)
 				}
 			}

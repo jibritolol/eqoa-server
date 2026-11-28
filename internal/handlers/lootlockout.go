@@ -6,8 +6,53 @@ import (
 	"time"
 
 	"github.com/eqoa/server/internal/database"
+	"github.com/eqoa/server/internal/entity"
 	"github.com/eqoa/server/internal/session"
 )
+
+// A first try at loot that starts a lockout takes nothing and says what it
+// costs; another takes it, from lootLockoutAskLeast (so a double press is not
+// an answer) to lootLockoutAskFor after the warning.
+const (
+	lootLockoutAskLeast = time.Second
+	lootLockoutAskFor   = 30 * time.Second
+)
+
+// lootLockoutAsk is a character's warning over a corpse's locked loot.
+type lootLockoutAsk struct {
+	char   uint32
+	corpse entity.EntityID
+	key    string
+}
+
+// lootLockoutAgreedLocked reports whether the character may take loot under
+// lock now, warning it when it has not been. Must be called with ls.mu held.
+func (ls *lootState) lootLockoutAgreedLocked(sess *session.Session, char uint32, corpse entity.EntityID,
+	lock database.LootLockout, now time.Time) bool {
+	if lock.Key == "" {
+		return true
+	}
+	for a, at := range ls.asked {
+		if now.Sub(at) > lootLockoutAskFor {
+			delete(ls.asked, a)
+		}
+	}
+	ask := lootLockoutAsk{char, corpse, lock.Key}
+	if at, ok := ls.asked[ask]; ok {
+		if now.Sub(at) < lootLockoutAskLeast {
+			return false // the same press, or the one after it
+		}
+		delete(ls.asked, ask)
+		return true
+	}
+	if ls.asked == nil {
+		ls.asked = map[lootLockoutAsk]time.Time{}
+	}
+	ls.asked[ask] = now
+	SendColoredChat(sess, fmt.Sprintf("Taking this starts your %s %s loot lockout. Loot it again within %d seconds to take it.",
+		lootLockoutSpan(lock.Duration), lock.Name, int(lootLockoutAskFor/time.Second)), raidR, raidG, raidB)
+	return false
+}
 
 func (h *NPCWindowHandler) lootLockoutRefusal(char uint32, lock database.LootLockout, now time.Time) string {
 	if lock.Key == "" {

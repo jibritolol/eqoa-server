@@ -201,6 +201,94 @@ func TestMythicRosterLimitAndReturnDuringPull(t *testing.T) {
 	}
 }
 
+// A boss pulled and let go before the fight's next step saves no roster: one
+// who enters after that is in the next pull's, and may be resurrected into it.
+func TestMythicRosterIsSavedAtEachPull(t *testing.T) {
+	r := newMythic(t, 3)
+	r.group(r.ps...)
+	inst := r.enter(t, 0)
+	r.enter(t, 1)
+	boss := r.boss(t, inst)
+	engage := func(on bool) {
+		r.w.mu.Lock()
+		defer r.w.mu.Unlock()
+		boss.CurrentEnemy, boss.Threats = 0, nil
+		if on {
+			boss.CurrentEnemy, boss.Threats = r.ps[0].ServerID, map[EntityID]int64{r.ps[0].ServerID: 1}
+		}
+	}
+	engage(true)
+	if why, ok := r.w.DungeonEnterVia(r.ss[2], EncounterMythicNagafen, HeroicRaidBoardName, r.now); ok || !strings.Contains(why, "in progress") {
+		t.Fatalf("entry as the boss is pulled: %q, %v", why, ok)
+	}
+	engage(false)
+	if got := r.enter(t, 2); got != inst {
+		t.Fatalf("entry once the boss was let go went to %d, want %d", got, inst)
+	}
+
+	r.pull(boss, r.ps[0])
+	dead := r.ps[2]
+	r.w.mu.Lock()
+	dead.noteRezChance(1, r.now)
+	dead.HP, dead.DiedAt = 0, r.now
+	r.w.offerRezReturnLocked(r.ps[0], dead, r.now)
+	r.w.mu.Unlock()
+	r.w.PlaceRespawn(dead.ServerID, 5520, 132, 4016, 0)
+	if _, _, _, _, ok := r.w.TakeRezReturn(r.ss[2], true, r.now); !ok {
+		t.Fatal("a raider who was in the pull could not be resurrected into it")
+	}
+}
+
+// A reserved seat is let go when its player never arrives, and one who arrives
+// and leaves by a direct move (a GM's teleport, Return Home) keeps none.
+func TestMythicReservedSeatIsLetGo(t *testing.T) {
+	r := newMythic(t, 3)
+	r.group(r.ps...)
+	inst := r.enter(t, 0)
+	seats := func() int {
+		r.w.mu.Lock()
+		defer r.w.mu.Unlock()
+		return len(r.w.raidOccupantsLocked(r.w.dungeons.insts[inst]))
+	}
+	check := func(d time.Duration) {
+		r.now = r.now.Add(d)
+		r.w.mu.Lock()
+		r.w.dungeonsSystem(r.now)
+		r.w.mu.Unlock()
+	}
+	move := func(i int, world uint8) {
+		r.w.mu.Lock()
+		r.ps[i].World = world
+		r.w.mu.Unlock()
+	}
+
+	if why, ok := r.w.DungeonEnterVia(r.ss[1], EncounterMythicNagafen, HeroicRaidBoardName, r.now); !ok {
+		t.Fatal(why)
+	}
+	check(2 * time.Second)
+	check(raidEntryHold / 2)
+	if got := seats(); got != 2 {
+		t.Fatalf("%d seats while one player is on its way in, want 2", got)
+	}
+	check(raidEntryHold)
+	if got := seats(); got != 1 || r.ps[1].Instance != 0 {
+		t.Fatalf("%d seats after the player never arrived, want 1 (its instance %d)", got, r.ps[1].Instance)
+	}
+
+	if why, ok := r.w.JoinInstanceOf(r.ps[2].ServerID, r.ps[0].ServerID, true); !ok {
+		t.Fatal(why)
+	}
+	move(2, 18)
+	check(2 * time.Second)
+	if got := seats(); got != 2 {
+		t.Fatalf("%d seats with two players inside, want 2", got)
+	}
+	move(2, 0)
+	if got := seats(); got != 1 {
+		t.Fatalf("%d seats after the second left by a direct move, want 1", got)
+	}
+}
+
 // boss is the instance's copy of the boss.
 func (r *mythicRig) boss(t *testing.T, inst uint32) *NPC {
 	t.Helper()

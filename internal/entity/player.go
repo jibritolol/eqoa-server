@@ -206,6 +206,8 @@ type Player struct {
 	// nothing outside an instanced world
 	Instance  uint32
 	raidEntry uint32 // a seat reserved while travel into a Heroic Raid is queued
+	// raidEntrySeen is when raidSeatSettleLocked first found that seat waiting
+	raidEntrySeen time.Time
 
 	// Coaching / Teleport
 	TeleportCounter   uint32

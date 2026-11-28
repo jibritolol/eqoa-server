@@ -839,6 +839,7 @@ func (w *World) dungeonsSystem(now time.Time) {
 		}
 	}
 	for _, p := range w.Players {
+		w.raidSeatSettleLocked(p, now)
 		if !w.inDungeonsLocked(p) || p.IsDead() || p.respawnPending() {
 			continue
 		}

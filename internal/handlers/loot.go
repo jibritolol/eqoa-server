@@ -92,6 +92,8 @@ type lootState struct {
 	nextRoll int
 	// listed is the corpse each master looter was last listed, by character
 	listed map[uint32]entity.EntityID
+	// asked is when each character was warned of a loot lockout (lootlockout.go)
+	asked map[lootLockoutAsk]time.Time
 }
 
 func (h *NPCWindowHandler) loots() *lootState {
@@ -680,8 +682,10 @@ func (h *NPCWindowHandler) HandleLootItem(sess *session.Session, msg *protocol.M
 	if took < count {
 		SendClientMessage(sess, lootNoRoom) // the rest of the stack stays
 	}
+	if took > 0 && !ls.lootLockoutAgreedLocked(sess, char, id, lock, now) {
+		return nil
+	}
 	if took > 0 {
-		warnLootLockout(sess, lock)
 		out, k, err := h.giveItemWithLockout(player, inv, rec, took, 0, lock, now)
 		if err != nil {
 			log.Printf("Loot: %s: %v", player.Name, err)
@@ -876,8 +880,12 @@ func (h *NPCWindowHandler) lootAllByOne(sess *session.Session, ls *lootState, c 
 		case took < rec.StackLeft:
 			left = true
 		}
+		if took > 0 && !ls.lootLockoutAgreedLocked(sess, char, id, lock, now) {
+			locked[lock.Key] = true // warned: its other loot waits for the next try too
+			i++
+			continue
+		}
 		if took > 0 {
-			warnLootLockout(sess, lock)
 			out, k, err := h.giveItemWithLockout(player, inv, rec, took, 0, lock, now)
 			if err != nil {
 				log.Printf("Loot: %s: %v", player.Name, err)
