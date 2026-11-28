@@ -191,6 +191,7 @@ var snapshotRules = map[string]snapshotRule{
 	// Heirloom Marks (marks.go, work 1927): game state, no person's data; kept whole, said here so a
 	// snapshot's reader knows them.
 	"charmarks":       {why: "each character's Heirloom Marks, its kill-mark hour, Ring of Guises rank and guise, Heirloom Rank (marks.go)"},
+	"charlootlockout": {why: "each character's loot lockout scope and expiry (lootlockout.go)"},
 	"accountheirloom": {why: "each account's Heirloom Rank, the highest its characters bought (marks.go)"},
 	"charmarks_log":   {why: "each award and spending of Heirloom Marks: character, time, source, amount, what for (marks.go)"},
 	"charrelive":      {why: "a level 60's Relive: its level, experience, debt, since when, on or not (marks.go)"},

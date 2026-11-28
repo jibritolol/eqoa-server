@@ -92,13 +92,15 @@ func newMythic(t *testing.T, n int) *mythicRig {
 // land moves every due traveller to its spot.
 func (r *mythicRig) land() {
 	r.w.mu.Lock()
-	defer r.w.mu.Unlock()
 	due := r.w.gates.due
 	r.w.gates.due = nil
+	r.w.mu.Unlock()
 	for _, t := range due {
-		r.w.SpatialIndex.Remove(t.P.ServerID, t.P.X, t.P.Z)
-		t.P.World, t.P.X, t.P.Y, t.P.Z = t.To.World, t.To.X, t.To.Y, t.To.Z
-		r.w.SpatialIndex.Insert(t.P.ServerID, t.P.X, t.P.Z)
+		if t.HasFacing {
+			r.w.PlaceFacing(t.P.ServerID, t.To.X, t.To.Y, t.To.Z, t.To.World, t.Facing)
+		} else {
+			r.w.PlaceRespawn(t.P.ServerID, t.To.X, t.To.Y, t.To.Z, t.To.World)
+		}
 	}
 }
 
@@ -123,6 +125,80 @@ func (r *mythicRig) enter(t *testing.T, i int) uint32 {
 		t.Fatalf("%s in world %d instance %d", r.ps[i].Name, r.ps[i].World, r.ps[i].Instance)
 	}
 	return r.ps[i].Instance
+}
+
+func TestMythicRosterLimitAndReturnDuringPull(t *testing.T) {
+	r := newMythic(t, 12)
+	r.group(r.ps...)
+	tryEnter := func(i int) (string, bool) {
+		return r.w.DungeonEnterVia(r.ss[i], EncounterMythicNagafen, HeroicRaidBoardName, r.now)
+	}
+	leave := func(i int) {
+		t.Helper()
+		if why, ok := r.w.DungeonLeave(r.ss[i]); !ok {
+			t.Fatalf("player %d could not leave: %s", i, why)
+		}
+		r.land()
+	}
+
+	// All ten requests are queued before the travel hook lands any of them.
+	for i := 0; i < 10; i++ {
+		if why, ok := tryEnter(i); !ok {
+			t.Fatalf("player %d was refused: %s", i, why)
+		}
+	}
+	if why, ok := tryEnter(10); ok || !strings.Contains(why, "already has 10 players") {
+		t.Fatalf("eleventh join: %q, %v", why, ok)
+	}
+	r.land()
+	inst := r.ps[0].Instance
+	leave(9)
+	if got := r.enter(t, 10); got != inst {
+		t.Fatalf("replacement went to instance %d, want %d", got, inst)
+	}
+
+	boss := r.boss(t, inst)
+	r.pull(boss, r.ps[0])
+	dead := r.ps[8]
+	r.w.mu.Lock()
+	dead.noteRezChance(1, r.now)
+	dead.HP, dead.DiedAt = 0, r.now
+	r.w.offerRezReturnLocked(r.ps[0], dead, r.now)
+	r.w.mu.Unlock()
+	r.w.PlaceRespawn(dead.ServerID, 5520, 132, 4016, 0) // bind point outside the instance
+	if why, ok := tryEnter(11); ok || !strings.Contains(why, "in progress") {
+		t.Fatalf("mid-pull replacement: %q, %v", why, ok)
+	}
+	if why, ok := r.w.JoinInstanceOf(r.ps[11].ServerID, r.ps[0].ServerID, true); ok || !strings.Contains(why, "in progress") {
+		t.Fatalf("mid-pull summoned replacement: %q, %v", why, ok)
+	}
+	if why := r.w.DungeonAddMember(r.ss[0], r.ps[11].Name, 0); why != instLineRaidPull {
+		t.Fatalf("mid-pull add command: %q", why)
+	}
+	world, x, y, z, ok := r.w.TakeRezReturn(r.ss[8], true, r.now)
+	if !ok || world != 18 || dead.Instance != inst {
+		t.Fatalf("rez did not reserve the original instance: %v, world %d instance %d", ok, world, dead.Instance)
+	}
+	if placed, _, ok := r.w.PlaceRespawn(dead.ServerID, x, y, z, world); !ok || placed.Instance != inst || placed.HP != placed.MaxHP {
+		t.Fatalf("rez did not return the raider alive: %v %+v", ok, placed)
+	}
+
+	leave(10)
+	r.w.mu.Lock()
+	boss.CurrentEnemy, boss.Threats = 0, nil
+	r.w.mu.Unlock()
+	r.step(mythicIdleGrace + 200*time.Millisecond)
+	if got := r.enter(t, 11); got != inst {
+		t.Fatalf("replacement after reset went to instance %d, want %d", got, inst)
+	}
+
+	r.w.mu.Lock()
+	r.w.dungeons.set.Lockout = DefaultDungeonLockout
+	r.w.dungeonCloseLocked(r.w.dungeons.insts[inst], "test", r.now)
+	r.w.mu.Unlock()
+	if got := r.enter(t, 0); got == inst {
+		t.Fatal("the old closed instance did not clear")
+	}
 }
 
 // boss is the instance's copy of the boss.

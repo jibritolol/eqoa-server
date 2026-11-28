@@ -26,6 +26,9 @@ func (h *CharacterHandler) travelPlayer(t entity.GateTravel) {
 	if gw == nil || t.Sess == nil || t.P == nil {
 		return
 	}
+	if t.RaidEntry != 0 {
+		defer gw.FinishRaidEntry(t.P.ServerID, t.RaidEntry)
+	}
 	to := t.To
 	if t.Home != 0 {
 		x, y, z, world, via, ok := homeOf(gw, gw.FindSessionByEntityID(t.Home), t.Home)

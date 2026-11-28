@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -462,6 +463,17 @@ func (h *NPCWindowHandler) startRaidLootLocked(ls *lootState, npc *entity.NPC, k
 	h.holdCorpseFor(npc.ServerID, k.Died, now.Add(length+raidHoldFor))
 	h.raidSayLocked(rc, nil, h.linkedf(npc.Name, "Need before greed on %s's loot: %s. Need, Greed or Pass within %d seconds.",
 		npc.Name, coveredList, int(length/time.Second)))
+	if k.HeroicBoss != "" {
+		var items []database.CharInventoryEntry
+		for _, roll := range rolls {
+			items = append(items, roll.item.rec)
+		}
+		for _, seat := range r.Seats {
+			if s, _ := h.raidSeatOf(seat.ServerID); s != nil {
+				h.warnCorpseLootLockouts(s, seat.ServerID, items, now)
+			}
+		}
+	}
 	for _, roll := range rolls {
 		h.offerRollLocked(roll, now)
 	}
@@ -724,6 +736,15 @@ func (h *NPCWindowHandler) rollChoiceLocked(ls *lootState, sess *session.Session
 		return nil
 	}
 	_, rc := ls.corpseRaidLocked(r)
+	if choice != rollPass {
+		lock := lootLockoutFor(r.item.rec.Pattern.PatternID)
+		if why := h.lootLockoutRefusal(char, lock, now); why != "" {
+			tellLootLockoutRefusal(sess, why)
+			choice = rollPass
+		} else {
+			warnLootLockout(sess, lock)
+		}
+	}
 	item := r.item.rec.Pattern.ItemName
 	linked := lootItem(r.item.rec, 0)
 	s.choice = choice
@@ -747,7 +768,8 @@ func (h *NPCWindowHandler) rollChoiceLocked(ls *lootState, sess *session.Session
 
 // decideLocked is a roll's winner (the file's doc), a tie rolled again and said; nil when
 // no one rolled. Must be called with ls.mu held.
-func (h *NPCWindowHandler) decideLocked(r *lootRoll, rc *raidCorpse) *rollSeat {
+func (h *NPCWindowHandler) decideLocked(r *lootRoll, rc *raidCorpse, now time.Time) *rollSeat {
+	lock := lootLockoutFor(r.item.rec.Pattern.PatternID)
 	for _, tier := range []rollChoice{rollNeed, rollGreed} {
 		var top []*rollSeat
 		best := -1
@@ -757,6 +779,8 @@ func (h *NPCWindowHandler) decideLocked(r *lootRoll, rc *raidCorpse) *rollSeat {
 			case h.loreHasLocked(r.item, rc, s.ServerID):
 				// a Lore item it holds or has won off this corpse already: the next
 				// highest's (a GM's petition 2248)
+			case h.lootLockoutRefusal(s.ServerID, lock, now) != "" || heldLootClaim(rc, r.item, s.ServerID, lock.Key, now):
+				// This player took or is waiting to claim a drop from this lockout.
 			case s.roll > best:
 				best, top = s.roll, []*rollSeat{s}
 			case s.roll == best:
@@ -789,6 +813,18 @@ func (h *NPCWindowHandler) decideLocked(r *lootRoll, rc *raidCorpse) *rollSeat {
 		}
 	}
 	return nil
+}
+
+func heldLootClaim(rc *raidCorpse, item *heldItem, char uint32, key string, now time.Time) bool {
+	if rc != nil && key != "" {
+		for _, hi := range rc.held {
+			if hi != item && hi.winner == char && now.Before(hi.until) &&
+				lootLockoutFor(hi.rec.Pattern.PatternID).Key == key {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // loreHasLocked reports a Lore item's seat that holds one already (worn, carried or
@@ -831,25 +867,35 @@ func (h *NPCWindowHandler) endRollLocked(ls *lootState, r *lootRoll, now time.Ti
 		return nil // the corpse went with it
 	}
 	item := lootItem(hi.rec, 0)
-	win := h.decideLocked(r, rc)
-	if win == nil {
-		rc.drop(hi)
-		c.items = append(c.items, hi.rec)
-		h.raidSayLocked(rc, r.seats, h.linkedf(rc.from, "No one rolled on %s: it lies on %s's corpse for anyone.", item, rc.from))
+	for {
+		win := h.decideLocked(r, rc, now)
+		if win == nil {
+			rc.drop(hi)
+			c.items = append(c.items, hi.rec)
+			line := "No one rolled on %s: it lies on %s's corpse for anyone."
+			if lootLockoutFor(hi.rec.Pattern.PatternID).Key != "" {
+				line = "No eligible roll won %s. It lies on %s's corpse for anyone eligible to loot it."
+			}
+			h.raidSayLocked(rc, r.seats, h.linkedf(rc.from, line, item, rc.from))
+			return nil
+		}
+		hi.winner, hi.winnerName, hi.until = win.ServerID, win.Name, now.Add(raidHoldFor)
+		took, why := h.giveWonLocked(c, hi, now)
+		if why == "lockout" {
+			win.choice = rollPass
+			continue
+		}
+		h.raidSayLocked(rc, r.seats, h.linkedf(win.Name, "%s wins %s with %s %d.", win.Name, item, win.choice, win.roll))
+		if took != nil {
+			return []winTake{*took}
+		}
+		h.holdCorpseFor(r.corpse, r.died, hi.until)
+		if s, _ := h.raidSeatOf(win.ServerID); s != nil {
+			h.wonWaitsLinked(win.Name, hi.rec, rc.from, why, raidHoldFor).colored(s, raidR, raidG, raidB)
+		}
+		h.raidSayLocked(rc, nil, h.linkedf(win.Name, "%s waits on %s's corpse for %s for %s.", item, rc.from, win.Name, spanWords(raidHoldFor)))
 		return nil
 	}
-	hi.winner, hi.winnerName, hi.until = win.ServerID, win.Name, now.Add(raidHoldFor)
-	h.raidSayLocked(rc, r.seats, h.linkedf(win.Name, "%s wins %s with %s %d.", win.Name, item, win.choice, win.roll))
-	took, why := h.giveWonLocked(c, hi)
-	if took != nil {
-		return []winTake{*took}
-	}
-	h.holdCorpseFor(r.corpse, r.died, hi.until)
-	if s, _ := h.raidSeatOf(win.ServerID); s != nil {
-		h.wonWaitsLinked(win.Name, hi.rec, rc.from, why, raidHoldFor).colored(s, raidR, raidG, raidB)
-	}
-	h.raidSayLocked(rc, nil, h.linkedf(win.Name, "%s waits on %s's corpse for %s for %s.", item, rc.from, win.Name, spanWords(raidHoldFor)))
-	return nil
 }
 
 // wonWaitsLine is a winner's line for an item it could not take now.
@@ -881,13 +927,18 @@ func (rc *raidCorpse) drop(hi *heldItem) {
 // giveWonLocked puts a won item in its winner's pack when the winner is in the world and
 // has room: the take, or nil and why not ("away", "full", "lore"). Must be called with
 // ls.mu held.
-func (h *NPCWindowHandler) giveWonLocked(c *corpse, hi *heldItem) (*winTake, string) {
+func (h *NPCWindowHandler) giveWonLocked(c *corpse, hi *heldItem, now time.Time) (*winTake, string) {
 	sess, p := h.raidSeatOf(hi.winner)
 	inv := sessionInvList(sess)
 	if sess == nil || p == nil || inv == nil || h.inv == nil {
 		return nil, "away"
 	}
 	rec := hi.rec
+	lock := lootLockoutFor(rec.Pattern.PatternID)
+	if why := h.lootLockoutRefusal(p.CharServerID, lock, now); why != "" {
+		tellLootLockoutRefusal(sess, why)
+		return nil, "lockout"
+	}
 	room := inv.wouldAdd(rec.Pattern.PatternID, rec.StackLeft, rec.Pattern.MaxStack)
 	took := inv.loreRoom(&rec.Pattern, room)
 	switch {
@@ -896,9 +947,13 @@ func (h *NPCWindowHandler) giveWonLocked(c *corpse, hi *heldItem) (*winTake, str
 	case took < rec.StackLeft:
 		return nil, "full"
 	}
-	out, key, err := h.giveItem(p, inv, rec, took, 0)
+	out, key, err := h.giveItemWithLockout(p, inv, rec, took, 0, lock, now)
 	if err != nil {
 		log.Printf("Raid loot: %s's %q: %v", p.Name, rec.Pattern.ItemName, err)
+		if errors.Is(err, database.ErrLootLocked) {
+			tellLootLockoutRefusal(sess, h.lootLockoutRefusal(p.CharServerID, lock, now))
+			return nil, "lockout"
+		}
 		return nil, "full"
 	}
 	queueReliable(sess, protocol.OpcodeAddInvItem, addInvItemPayload(out, key, readsCapes(sess)))
@@ -929,8 +984,11 @@ func (h *NPCWindowHandler) raidOpenLocked(sess *session.Session, ls *lootState, 
 	if len(mine) > 0 {
 		var won []winTake
 		for _, hi := range mine {
-			if took, why := h.giveWonLocked(c, hi); took != nil {
+			if took, why := h.giveWonLocked(c, hi, now); took != nil {
 				won = append(won, *took)
+			} else if why == "lockout" {
+				rc.drop(hi)
+				c.items = append(c.items, hi.rec)
 			} else if why == "lore" {
 				SendClientMessage(sess, fmt.Sprintf(loreLine, hi.rec.Pattern.ItemName))
 			} else {
@@ -1170,9 +1228,14 @@ func (h *NPCWindowHandler) MasterAssign(sess *session.Session, key int, id uint3
 		return
 	}
 	rec := c.items[key]
+	lock := lootLockoutFor(rec.Pattern.PatternID)
 	inv := sessionInvList(to.sess)
 	if inv == nil || h.inv == nil {
 		SendColoredChat(sess, fmt.Sprintf("%s cannot take items now.", to.name), 255, 63, 63)
+		return
+	}
+	if why := h.lootLockoutRefusal(to.char, lock, now); why != "" {
+		tellLootLockoutRefusal(sess, to.name+" cannot receive that item. "+why)
 		return
 	}
 	room := inv.wouldAdd(rec.Pattern.PatternID, rec.StackLeft, rec.Pattern.MaxStack)
@@ -1185,9 +1248,13 @@ func (h *NPCWindowHandler) MasterAssign(sess *session.Session, key int, id uint3
 		SendColoredChat(sess, fmt.Sprintf("%s has no room for %s.", to.name, lootStackName(rec)), 255, 63, 63)
 		return
 	}
-	out, k, err := h.giveItem(to.p, inv, rec, took, 0)
+	warnLootLockout(to.sess, lock)
+	out, k, err := h.giveItemWithLockout(to.p, inv, rec, took, 0, lock, now)
 	if err != nil {
 		log.Printf("Raid loot: assigning %q to %s: %v", rec.Pattern.ItemName, to.name, err)
+		if errors.Is(err, database.ErrLootLocked) {
+			tellLootLockoutRefusal(sess, to.name+" cannot receive that item. "+h.lootLockoutRefusal(to.char, lock, now))
+		}
 		return
 	}
 	queueReliable(to.sess, protocol.OpcodeAddInvItem, addInvItemPayload(out, k, readsCapes(to.sess)))

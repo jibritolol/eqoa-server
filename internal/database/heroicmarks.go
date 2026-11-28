@@ -38,6 +38,8 @@ type HeroicRole struct {
 // actual components from the character's inventory.
 type HeroicMarkSet struct {
 	Boss, Name, Element string
+	DropCount           int `json:"drop_count"`
+	LootLockoutHours    int `json:"loot_lockout_hours"`
 	Roles               []HeroicRole
 	Mastery             struct {
 		Base, ID int
@@ -84,14 +86,19 @@ func (s *HeroicMarkSet) RoleFor(class int) *HeroicRole {
 }
 
 func HeroicMarkPattern(id int) bool {
-	for _, set := range heroicMarkSets {
+	return HeroicMarksForPattern(id) != nil
+}
+
+func HeroicMarksForPattern(id int) *HeroicMarkSet {
+	for i := range heroicMarkSets {
+		set := &heroicMarkSets[i]
 		for _, role := range set.Roles {
 			if role.MarkID == id {
-				return true
+				return set
 			}
 		}
 	}
-	return false
+	return nil
 }
 
 func HeroicPersonalPattern(id int) bool {

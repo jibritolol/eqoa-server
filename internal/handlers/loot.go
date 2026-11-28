@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -169,6 +170,7 @@ func (h *NPCWindowHandler) OpenCorpse(sess *session.Session, npc *entity.NPC) bo
 	h.giveCorpseCoins(sess, npc, c.tunar)
 	c.tunar = 0
 	view := ls.viewLocked(npc.ServerID, c, h.charOf(sess))
+	h.warnCorpseLootLockouts(sess, h.charOf(sess), view, now)
 	ls.sentLocked(sess, view)
 	SendLoot(sess, view)
 	h.raidOpenedLocked(sess, ls, npc, c)
@@ -655,6 +657,11 @@ func (h *NPCWindowHandler) HandleLootItem(sess *session.Session, msg *protocol.M
 	// answered with 0x0019 (lootInPlaceLocked)
 	before := append([]database.CharInventoryEntry(nil), view[:min(len(view), maxCorpseItems)]...)
 	rec := view[i]
+	lock, now := lootLockoutFor(rec.Pattern.PatternID), h.lootClock()
+	if why := h.lootLockoutRefusal(char, lock, now); why != "" {
+		tellLootLockoutRefusal(sess, why)
+		return nil
+	}
 	count := min(int(n), rec.StackLeft)
 	room := inv.wouldAdd(rec.Pattern.PatternID, count, rec.Pattern.MaxStack)
 	took := inv.loreRoom(&rec.Pattern, room)
@@ -674,9 +681,13 @@ func (h *NPCWindowHandler) HandleLootItem(sess *session.Session, msg *protocol.M
 		SendClientMessage(sess, lootNoRoom) // the rest of the stack stays
 	}
 	if took > 0 {
-		out, k, err := h.giveItem(player, inv, rec, took, 0)
+		warnLootLockout(sess, lock)
+		out, k, err := h.giveItemWithLockout(player, inv, rec, took, 0, lock, now)
 		if err != nil {
 			log.Printf("Loot: %s: %v", player.Name, err)
+			if errors.Is(err, database.ErrLootLocked) {
+				tellLootLockoutRefusal(sess, h.lootLockoutRefusal(char, lock, now))
+			}
 		} else {
 			ls.tookLocked(id, c, char, i, took)
 			inPlace := count == rec.StackLeft && took == room &&
@@ -761,7 +772,8 @@ func (h *NPCWindowHandler) HandleLootAll(sess *session.Session, msg *protocol.Me
 		return nil
 	}
 	id, char := ls.open[sess], player.CharServerID
-	if loreStopsTakeAll(inv, ls.viewLocked(id, c, char)) {
+	view := ls.viewLocked(id, c, char)
+	if lootLockoutStopsTakeAll(view) || loreStopsTakeAll(inv, view) {
 		looted = h.lootAllByOne(sess, ls, c, player, inv)
 		return nil
 	}
@@ -834,12 +846,25 @@ func (h *NPCWindowHandler) lootAllByOne(sess *session.Session, ls *lootState, c 
 	var looted []lootTake
 	id, char := ls.open[sess], player.CharServerID
 	left, said := false, map[int]bool{}
+	locked := map[string]bool{}
+	now := h.lootClock()
 	for i := 0; ; {
 		view := ls.viewLocked(id, c, char)
 		if i >= len(view) {
 			break
 		}
 		rec := view[i]
+		lock := lootLockoutFor(rec.Pattern.PatternID)
+		if locked[lock.Key] {
+			i++
+			continue
+		}
+		if why := h.lootLockoutRefusal(char, lock, now); why != "" {
+			locked[lock.Key] = true
+			tellLootLockoutRefusal(sess, why)
+			i++
+			continue
+		}
 		room := inv.wouldAdd(rec.Pattern.PatternID, rec.StackLeft, rec.Pattern.MaxStack)
 		took := inv.loreRoom(&rec.Pattern, room)
 		switch {
@@ -852,9 +877,14 @@ func (h *NPCWindowHandler) lootAllByOne(sess *session.Session, ls *lootState, c 
 			left = true
 		}
 		if took > 0 {
-			out, k, err := h.giveItem(player, inv, rec, took, 0)
+			warnLootLockout(sess, lock)
+			out, k, err := h.giveItemWithLockout(player, inv, rec, took, 0, lock, now)
 			if err != nil {
 				log.Printf("Loot: %s: %v", player.Name, err)
+				if errors.Is(err, database.ErrLootLocked) {
+					tellLootLockoutRefusal(sess, h.lootLockoutRefusal(char, lock, now))
+					locked[lock.Key] = true
+				}
 				took = 0
 			} else {
 				queueReliable(sess, protocol.OpcodeAddInvItem, addInvItemPayload(out, k, readsCapes(sess)))
@@ -868,7 +898,7 @@ func (h *NPCWindowHandler) lootAllByOne(sess *session.Session, ls *lootState, c 
 			i++
 		}
 	}
-	log.Printf("Loot: %s took everything but a Lore item held; %d records left", player.Name, len(ls.viewLocked(id, c, char)))
+	log.Printf("Loot: %s took %d records individually; %d records left", player.Name, len(looted), len(ls.viewLocked(id, c, char)))
 	if left {
 		SendClientMessage(sess, lootNoRoom)
 	}

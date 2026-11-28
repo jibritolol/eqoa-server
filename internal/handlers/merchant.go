@@ -540,22 +540,32 @@ func (h *NPCWindowHandler) buy(sess *session.Session, id uint32, index, count in
 // item arrives with. It returns the record to send and the key the client
 // files it under.
 func (h *NPCWindowHandler) giveItem(player *entity.Player, l *invList, rec database.CharInventoryEntry, n, location int) (*database.CharInventoryEntry, uint32, error) {
+	return h.giveItemWithLockout(player, l, rec, n, location, database.LootLockout{}, time.Time{})
+}
+
+func (h *NPCWindowHandler) giveItemWithLockout(player *entity.Player, l *invList, rec database.CharInventoryEntry, n, location int,
+	lock database.LootLockout, now time.Time) (*database.CharInventoryEntry, uint32, error) {
 	p := &rec.Pattern
 	if rec.Charges == 0 {
 		rec.Charges = h.inv.ItemCharges(p.PatternID) // a new one holds them all
 	}
 	out := wireRecord(rec)
 	out.StackLeft = n
-	if i := l.stackOnto(p.PatternID, p.MaxStack); i >= 0 {
+	i := l.stackOnto(p.PatternID, p.MaxStack)
+	var itemID, stack int
+	if i >= 0 {
 		have, _ := l.at(i)
-		if err := h.inv.SetItemStack(player.CharServerID, have.itemID, have.qty+n); err != nil {
-			return nil, 0, err
-		}
-		key, _ := l.add(have.itemID, p.PatternID, n, p.MaxStack)
-		out.ItemID = have.itemID
-		return &out, key, nil
+		itemID, stack = have.itemID, have.qty+n
 	}
-	itemID, err := h.inv.AddCharItem(player.CharServerID, p.PatternID, n, rec.RemainHP, rec.Charges, location)
+	var err error
+	switch {
+	case lock.Key != "":
+		itemID, err = h.inv.GrantLockedLoot(player.CharServerID, rec, n, itemID, stack, location, lock, now)
+	case i >= 0:
+		err = h.inv.SetItemStack(player.CharServerID, itemID, stack)
+	default:
+		itemID, err = h.inv.AddCharItem(player.CharServerID, p.PatternID, n, rec.RemainHP, rec.Charges, location)
+	}
 	if err != nil {
 		return nil, 0, err
 	}

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"log"
+	"time"
 
 	"github.com/eqoa/server/internal/database"
 )
@@ -20,10 +21,21 @@ func (h *NPCWindowHandler) rollHeroicMarks(boss string) []database.CharInventory
 		}
 		marks = append(marks, database.CharInventoryEntry{Pattern: mark, StackLeft: 1, EquipLoc: -1})
 	}
-	count := 2 + h.raidIntn(3)
+	count := set.DropCount
+	if count <= 0 {
+		count = 2 + h.raidIntn(3)
+	}
 	drops := make([]database.CharInventoryEntry, 0, count)
 	for i := 0; i < count; i++ {
 		drops = append(drops, marks[h.raidIntn(len(marks))])
 	}
 	return drops
+}
+
+func lootLockoutFor(patternID int) database.LootLockout {
+	if set := database.HeroicMarksForPattern(patternID); set != nil && set.LootLockoutHours > 0 {
+		return database.LootLockout{Key: "heroic:" + set.Boss, Name: set.Name,
+			Duration: time.Duration(set.LootLockoutHours) * time.Hour}
+	}
+	return database.LootLockout{}
 }

@@ -3,6 +3,8 @@
     "boss": "mythic_nagafen",
     "name": "Lord Nagafen",
     "element": "fire",
+    "drop_count": 4,
+    "loot_lockout_hours": 18,
     "mastery": {"base": 211, "id": 29211, "name": "God Touched II"},
     "teleport": {
       "id": 995309,

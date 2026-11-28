@@ -1891,6 +1891,7 @@ func (w *World) BeginWarp(id EntityID, world byte) (facing float32, counter uint
 		return 0, 0, false, false
 	}
 	worldChanged = p.World != world
+	w.raidPlacementLocked(p, world)
 	p.World = world
 	p.TeleportCounter++
 	return p.Facing, p.TeleportCounter, worldChanged, true

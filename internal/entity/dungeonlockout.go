@@ -60,7 +60,7 @@ func (w *World) dungeonNowLocked() time.Time {
 
 // dungeonLockOutLocked locks everyone who stood in a closing instance out of its dungeon from now.
 func (w *World) dungeonLockOutLocked(in *dungeonInst, now time.Time) {
-	if w.dungeons.set.Lockout <= 0 || in == nil {
+	if w.dungeons.set.Lockout <= 0 || in == nil || w.dungeons.defs[in.def].heroicRaid() {
 		return
 	}
 	if w.dungeons.lockouts == nil {
@@ -77,7 +77,7 @@ func (w *World) dungeonLockOutLocked(in *dungeonInst, now time.Time) {
 
 // dungeonLockLeftLocked is how long char's lockout from dungeon def runs past now, and when it began (0: none).
 func (w *World) dungeonLockLeftLocked(char uint32, def int, now time.Time) (time.Duration, time.Time) {
-	if w.dungeons.set.Lockout <= 0 {
+	if w.dungeons.set.Lockout <= 0 || w.dungeons.defs[def].heroicRaid() {
 		return 0, time.Time{}
 	}
 	began, ok := w.dungeons.lockouts[dungeonLock{char, w.dungeons.defs[def].Key}]

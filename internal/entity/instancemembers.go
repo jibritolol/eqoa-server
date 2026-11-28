@@ -60,10 +60,14 @@ const (
 	instLineNone       = "Your party has no dungeon open. Its leader opens one at a Dungeon Warden."
 	instLineNoOne      = "No player of that name is in the world."
 	instLineOwner      = "The one who opened the instance cannot be taken out of it."
+	instLineRaidPull   = "The raid roster is locked during the pull."
 )
 
 // dungeonCapLocked is how many players the instance holds (the file's doc). Must be called with the lock held.
 func (w *World) dungeonCapLocked(in *dungeonInst) int {
+	if w.dungeons.defs[in.def].heroicRaid() {
+		return heroicRaidCap
+	}
 	w.dungeonFollowOwnerLocked(in)
 	if g := w.groups[in.group]; in.group != 0 && raidingLocked(g) {
 		return w.dungeons.set.RaidCap
@@ -186,11 +190,19 @@ func (w *World) DungeonAddMember(sess *session.Session, name string, targetID ui
 		return instLineNoOne
 	}
 	d := &w.dungeons.defs[in.def]
+	if d.heroicRaid() {
+		if w.raidPullActiveLocked(in) {
+			return instLineRaidPull
+		}
+		if why := w.raidEntryRefusalLocked(in, t.CharServerID); why != "" {
+			return why
+		}
+	}
 	party := w.dungeonPartyLocked(in)
 	if party[t.CharServerID] {
 		return fmt.Sprintf(instLineThere, t.Name, d.Name)
 	}
-	if cap := w.dungeonCapLocked(in); len(party) >= cap {
+	if cap := w.dungeonCapLocked(in); !d.heroicRaid() && len(party) >= cap {
 		return fmt.Sprintf(instLineFull, d.Name, cap)
 	}
 	delete(in.removed, t.CharServerID)
@@ -201,10 +213,18 @@ func (w *World) DungeonAddMember(sess *session.Session, name string, targetID ui
 		}
 		in.invited[t.CharServerID] = t.Name
 	}
-	n, cap := len(w.dungeonPartyLocked(in)), w.dungeonCapLocked(in)
 	if ts := w.findSessionByEntityIDLocked(t.ServerID); ts != nil && t != p {
-		w.sendColoredLocked(ts, fmt.Sprintf(instLineAddedYou, p.Name, d.Name, d.Key), dungeonColour)
+		if d.Hidden() {
+			w.sendColoredLocked(ts, fmt.Sprintf("%s adds you to their instance of %s. Enter at %s.", p.Name, d.Name, d.Via), dungeonColour)
+		} else {
+			w.sendColoredLocked(ts, fmt.Sprintf(instLineAddedYou, p.Name, d.Name, d.Key), dungeonColour)
+		}
 	}
+	if d.heroicRaid() {
+		log.Printf("Dungeons: %s adds %s to raid instance %d of %s", p.Name, t.Name, in.id, d.Name)
+		return fmt.Sprintf("%s may enter your party's instance of %s.", t.Name, d.Name)
+	}
+	n, cap := len(w.dungeonPartyLocked(in)), w.dungeonCapLocked(in)
 	log.Printf("Dungeons: %s adds %s to instance %d of %s (%s's): %d of %d", p.Name, t.Name, in.id, d.Name, in.ownerName, n, cap)
 	return fmt.Sprintf(instLineAdded, t.Name, d.Name, n, cap)
 }
@@ -219,6 +239,9 @@ func (w *World) DungeonRemoveMember(sess *session.Session, name string, targetID
 		return line
 	}
 	d := &w.dungeons.defs[in.def]
+	if d.heroicRaid() && w.raidPullActiveLocked(in) {
+		return instLineRaidPull
+	}
 	var char uint32
 	who := ""
 	if t != nil {

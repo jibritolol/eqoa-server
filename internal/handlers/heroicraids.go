@@ -31,7 +31,7 @@ import (
 const heroicRaidsBoxMark = 0x6C000000
 
 // HeroicRaidsName is the board's name (the data tool's row, a copy of the Heroic Dungeons board's body).
-const HeroicRaidsName = "Heroic Raids"
+const HeroicRaidsName = entity.HeroicRaidBoardName
 
 // heroicRaidsReach is how near the board an answer is taken.
 const heroicRaidsReach float32 = 15

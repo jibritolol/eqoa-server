@@ -50,7 +50,7 @@ func TestRezRoundTrip(t *testing.T) {
 	}
 	// a death's place is kept with it (petition 1130), a low level's with no debt too,
 	// and a second start of the schema leaves the row as it is
-	placed := RezRow{LeftMS: 90_000, Placed: true, World: 3, X: 25146.277, Y: 54.125, Z: 16733.584}
+	placed := RezRow{LeftMS: 90_000, Placed: true, World: 18, X: 4867.64, Y: -28.79, Z: 4423.88, Instance: 42}
 	if err := s.SaveRez(7, placed); err != nil {
 		t.Fatal(err)
 	}

@@ -41,7 +41,7 @@ func TestHeroicMarksRaidLoot(t *testing.T) {
 		r.p[i].Class = class
 		seats[i] = entity.RaidSeat{ServerID: r.p[i].CharServerID, Class: class, Name: r.p[i].Name, Level: 60}
 	}
-	r.dice = []int{2, 0, 1, 2, 3}
+	r.dice = []int{0, 1, 2, 3}
 	ls := r.f.h.loots()
 	npc := r.f.npc
 	r.f.h.startRaidLootLocked(ls, npc, entity.KillCredit{NPCID: npc.ServerID, Died: npc.DeathTime, HeroicBoss: set.Boss,
@@ -61,16 +61,14 @@ func TestHeroicMarksRaidLoot(t *testing.T) {
 			}
 		}
 	}
-	for count := 2; count <= 4; count++ {
-		r.dice = append([]int{count - 2}, make([]int, count)...)
-		drops := r.f.h.rollHeroicMarks(set.Boss)
-		if len(drops) != count {
-			t.Fatalf("got %d drops, want %d", len(drops), count)
-		}
-		for _, drop := range drops {
-			if drop.StackLeft != 1 || drop.Pattern.PatternID != set.Roles[0].MarkID {
-				t.Fatalf("an identical drop was combined: %+v", drop)
-			}
+	r.dice = []int{0, 0, 0, 0}
+	drops := r.f.h.rollHeroicMarks(set.Boss)
+	if len(drops) != 4 {
+		t.Fatalf("got %d drops, want 4", len(drops))
+	}
+	for _, drop := range drops {
+		if drop.StackLeft != 1 || drop.Pattern.PatternID != set.Roles[0].MarkID {
+			t.Fatalf("an identical drop was combined: %+v", drop)
 		}
 	}
 }
@@ -107,11 +105,12 @@ func TestHeroicMarksFromTheInstanceCorpse(t *testing.T) {
 			// The loot window itself drains the pending death. FFA below also
 			// runs the worker's drain explicitly before the window is opened.
 			h.raids.once.Do(func() {})
+			now := time.Now().Truncate(time.Millisecond)
+			h.raid.now = func() time.Time { return now }
+			h.lootNow = h.raid.now
 			votes := 0
 			h.raid.intn = func(n int) int {
 				switch n {
-				case 3:
-					return 2 // four drops
 				case 4:
 					return 0 // four Steel marks, which must be separate rolls
 				}
@@ -159,27 +158,40 @@ func TestHeroicMarksFromTheInstanceCorpse(t *testing.T) {
 				t.Fatal(err)
 			}
 			var rolls []int
+			warned := false
 			corpseItems := int64(-1)
 			for _, m := range r.anna.Queue().GetPending() {
 				data := m.Data()
 				switch opOf(data) {
+				case protocol.OpcodeColoredChat:
+					line, _ := readWideLine(data[2:])
+					warned = warned || strings.Contains(line, "18-hour Lord Nagafen loot lockout")
 				case protocol.OpcodeLoot:
 					corpseItems = lootCount(t, data)
 				case protocol.OpcodeRaidRoll:
 					rolls = append(rolls, int(binary.LittleEndian.Uint32(data[2:])))
 				}
 			}
+			if !warned {
+				t.Fatal("no loot lockout warning before choosing loot")
+			}
 			if mode.need {
 				if len(rolls) != 4 || corpseItems > 0 {
 					t.Fatalf("expected four separate rolls and no freely lootable marks, got %v and %d", rolls, corpseItems)
 				}
-				for _, id := range rolls {
-					h.RaidRollChoice(r.cora, id, rollNeed) // the melee character is refused
-					h.RaidRollChoice(r.cora, id, rollGreed)
+				// Both Need bids are in before either roll settles. The second
+				// award falls through to Greed even though Need would win it.
+				for _, id := range rolls[:2] {
 					h.RaidRollChoice(r.anna, id, rollNeed)
 				}
-				if votes != 8 {
-					t.Fatalf("expected two eligible votes on each mark, got %d", votes)
+				for _, id := range rolls {
+					h.RaidRollChoice(r.cora, id, rollGreed)
+					if id == rolls[2] || id == rolls[3] {
+						h.RaidRollChoice(r.anna, id, rollNeed)
+					}
+				}
+				if votes != 4 {
+					t.Fatalf("expected bids only while eligible, got %d", votes)
 				}
 			} else {
 				if len(rolls) != 0 || corpseItems != 4 {
@@ -188,16 +200,66 @@ func TestHeroicMarksFromTheInstanceCorpse(t *testing.T) {
 				if err := h.HandleLootAll(r.anna, incoming(protocol.OpcodeLootTakeAll, nil)); err != nil {
 					t.Fatal(err)
 				}
+				takeOne := incoming(protocol.OpcodeClientLoot, append(u32b(0), u32b(1)...))
+				if err := h.HandleLootItem(r.anna, takeOne); err != nil {
+					t.Fatal(err)
+				}
+				h.closeLoot(r.anna)
+				if !h.OpenCorpse(r.cora, boss) {
+					t.Fatal("eligible member could not open the corpse")
+				}
+				if err := h.HandleLootItem(r.cora, takeOne); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.HandleLootAll(r.cora, incoming(protocol.OpcodeLootTakeAll, nil)); err != nil {
+					t.Fatal(err)
+				}
 			}
-			pack, err := inv.GetPackItems(r.pa.CharServerID)
-			if err != nil || len(pack) != 1 || pack[0].Pattern.ItemName != "Nagafen's Mark of Steel" || pack[0].StackLeft != 4 {
-				t.Fatalf("expected four marks together in the winner's pack, got %+v (%v)", pack, err)
+			if corpse := h.loots().corpses[boss.ServerID]; len(corpse.items) != 2 {
+				t.Fatalf("expected two marks left for other eligible players, got %d", len(corpse.items))
 			}
-			pack, err = inv.GetPackItems(r.pc.CharServerID)
-			if err != nil || len(pack) != 0 {
-				t.Fatalf("Greed received a mark over Need: %+v (%v)", pack, err)
+			for _, p := range []*entity.Player{r.pa, r.pc} {
+				pack, err := inv.GetPackItems(p.CharServerID)
+				if err != nil || len(pack) != 1 || pack[0].Pattern.ItemName != "Nagafen's Mark of Steel" || pack[0].StackLeft != 1 {
+					t.Fatalf("%s should have one mark, got %+v (%v)", p.Name, pack, err)
+				}
+				lock := lootLockoutFor(pack[0].Pattern.PatternID)
+				expires, err := inv.LootLockoutUntil(p.CharServerID, lock.Key)
+				if err != nil || !expires.Equal(now.Add(18*time.Hour)) {
+					t.Fatalf("%s lockout expires at %v (%v)", p.Name, expires, err)
+				}
 			}
 		})
+	}
+}
+
+func TestHeroicMarksMasterLooterSharesOneLockoutAcrossMarkTypes(t *testing.T) {
+	r := newRaidLootRig(t, 2)
+	seedHeroicMarkPrerequisites(t, r.f.db)
+	if err := r.f.db.InstallHeroicMarks(); err != nil {
+		t.Fatal(err)
+	}
+	h, npc := r.f.h, r.f.npc
+	h.lootNow = h.raid.now
+	seats := []entity.RaidSeat{{ServerID: r.p[0].CharServerID, Name: r.p[0].Name}, {ServerID: r.p[1].CharServerID, Name: r.p[1].Name}}
+	r.dice = []int{0, 1, 2, 3}
+	h.startRaidLootLocked(h.loots(), npc, entity.KillCredit{NPCID: npc.ServerID, Died: npc.DeathTime,
+		HeroicBoss: entity.EncounterMythicNagafen,
+		Raid:       &entity.RaidKill{Group: 1, Rule: entity.LootMaster, Leader: seats[0], Seats: seats, Members: seats}})
+	h.OpenCorpse(r.sess[0], npc)
+	h.MasterAssign(r.sess[0], 0, 0, r.p[1].Name)
+	h.MasterAssign(r.sess[0], 0, 0, r.p[1].Name) // a different mark now sits in slot zero
+	if left := len(r.corpse().items); left != 3 {
+		t.Fatalf("expected one assignment, %d marks left", left)
+	}
+	h.MasterAbandon(r.sess[0])
+	h.closeLoot(r.sess[0])
+	h.OpenCorpse(r.sess[1], npc)
+	if err := h.HandleLootAll(r.sess[1], incoming(protocol.OpcodeLootTakeAll, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if left := len(r.corpse().items); left != 3 {
+		t.Fatalf("changing to FFA let the locked player take another mark, %d left", left)
 	}
 }
 

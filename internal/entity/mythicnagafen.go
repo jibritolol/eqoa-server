@@ -437,6 +437,9 @@ func mythicThreshold(boss *NPC, k int) int {
 
 // mythicPullLocked begins the fight. Must be called with the lock held.
 func (w *World) mythicPullLocked(f *mythicFight, now time.Time) {
+	if in := w.dungeons.insts[f.inst]; in != nil {
+		w.freezeRaidRosterLocked(in)
+	}
 	f.phase = mythicActive
 	f.pulled = now
 	f.nextBreath = now.Add(mythicBreathFirst)
@@ -997,6 +1000,9 @@ func MythicHeat(steps int) (player, merc int) {
 // mythicResetLocked puts the room back to staging (a wipe): the boss home at full health out of his fight, the guard
 // and the pools gone, the gates closed again. Must be called with the lock held.
 func (w *World) mythicResetLocked(f *mythicFight, why string, now time.Time) {
+	if in := w.dungeons.insts[f.inst]; in != nil {
+		in.raidPull = nil
+	}
 	w.mythicClearSpawnsLocked(f)
 	if boss := w.NPCs[f.boss]; boss != nil && !boss.Dead {
 		w.respawnNPCLocked(boss)
@@ -1013,6 +1019,7 @@ func (w *World) mythicResetLocked(f *mythicFight, why string, now time.Time) {
 
 // mythicCompleteLocked is the boss's death: the instance complete, once.
 func (w *World) mythicCompleteLocked(in *dungeonInst, f *mythicFight, now time.Time) {
+	in.raidPull = nil
 	if f.completed {
 		return
 	}

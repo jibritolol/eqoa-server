@@ -59,6 +59,9 @@ func (w *World) instanceJoinCheckLocked(p, via *Player, force bool, now time.Tim
 	if w.inDungeonsLocked(p) && p.Instance == in.id {
 		return "", true // there already
 	}
+	if why := w.raidEntryRefusalLocked(in, p.CharServerID); why != "" {
+		return why, false
+	}
 	if force {
 		return "", true
 	}
@@ -116,7 +119,7 @@ func (w *World) JoinInstanceOf(player, via EntityID, force bool) (string, bool) 
 		w.dungeons.stays[p.CharServerID] = dungeonStay{From: GateSpot{World: p.World, X: p.X, Y: p.Y, Z: p.Z,
 			Place: "where you were"}, FromFacing: p.Facing}
 	}
-	p.Instance = in.id
+	w.setDungeonInstanceLocked(p, in)
 	in.lastIn = now
 	in.markStood(p.CharServerID)
 	w.dungeons.movedAt[p.ServerID] = now

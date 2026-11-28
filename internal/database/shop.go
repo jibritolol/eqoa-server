@@ -205,7 +205,11 @@ func (s *InventoryStore) SetTunar(serverID uint32, tunar, bankTunar int) error {
 
 // execOne runs an UPDATE or DELETE that must touch exactly one row.
 func (s *InventoryStore) execOne(query string, args ...any) error {
-	res, err := s.db.Exec(query, args...)
+	return execInventoryRow(s.db.Exec, query, args...)
+}
+
+func execInventoryRow(exec func(string, ...any) (sql.Result, error), query string, args ...any) error {
+	res, err := exec(query, args...)
 	if err != nil {
 		return err
 	}

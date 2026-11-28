@@ -180,6 +180,8 @@ type dungeonInst struct {
 	stood map[uint32]bool
 	// enc is its dungeon's scripted fight (mythicnagafen.go), nil for none
 	enc *mythicFight
+	// raidPull is the set of Heroic Raid characters seated when the pull began.
+	raidPull map[uint32]bool
 }
 
 // dungeonStay is where a character in the dungeons came from.
@@ -350,7 +352,7 @@ func (w *World) dungeonAllowsLocked(in *dungeonInst, p *Player) bool {
 		return false // taken out of it (instancemembers.go)
 	}
 	_, added := in.invited[p.CharServerID]
-	return p.CharServerID == in.owner || (in.group != 0 && p.GroupID == in.group) || added
+	return p.CharServerID == in.owner || in.raidPull[p.CharServerID] || (in.group != 0 && p.GroupID == in.group) || added
 }
 
 // dungeonFollowOwnerLocked moves an instance to its owner's group of the moment, while the owner is online.
@@ -537,18 +539,21 @@ func (w *World) DungeonEnterVia(sess *session.Session, key, via string, now time
 		}
 		in = w.dungeonOpenLocked(def, p, now)
 	}
+	if why := w.raidEntryRefusalLocked(in, p.CharServerID); why != "" {
+		return why, false
+	}
 	if !w.inDungeonsLocked(p) {
 		w.dungeons.stays[p.CharServerID] = dungeonStay{From: GateSpot{World: p.World, X: p.X, Y: p.Y, Z: p.Z,
 			Place: "where you were"}, FromFacing: p.Facing}
 	}
-	p.Instance = in.id
+	w.setDungeonInstanceLocked(p, in)
 	in.lastIn = now
 	in.markStood(p.CharServerID)
 	w.dungeons.movedAt[p.ServerID] = now
 	delete(w.dungeons.badAt, p.ServerID)
 	e := d.Entrance
 	w.gates.due = append(w.gates.due, GateTravel{Sess: sess, P: p, To: GateSpot{World: d.World, X: e.X, Y: e.Y,
-		Z: e.Z, Place: d.Name}, Spell: DungeonWardenName, Facing: e.Facing, HasFacing: true})
+		Z: e.Z, Place: d.Name}, Spell: DungeonWardenName, Facing: e.Facing, HasFacing: true, RaidEntry: p.raidEntry})
 	w.sendColoredLocked(sess, fmt.Sprintf(dungeonLineEnter, d.Name, in.ownerName), dungeonColour)
 	log.Printf("Dungeons: %s enters %s (instance %d, %s's), %d creatures alive", p.Name, d.Name, in.id, in.ownerName,
 		w.dungeonAliveLocked(in))
@@ -777,7 +782,8 @@ func (w *World) dungeonLoginInstLocked(char, groupID uint32, world uint8, x, z f
 		if _, out := in.removed[char]; out {
 			continue // taken out of it (instancemembers.go)
 		}
-		if (in.owner == char || (in.group != 0 && in.group == groupID) || added) && (best == nil || in.id > best.id) {
+		if (in.owner == char || in.raidPull[char] || (in.group != 0 && in.group == groupID) || added) && (best == nil || in.id > best.id) &&
+			w.raidEntryRefusalLocked(in, char) == "" {
 			best = in
 		}
 	}
@@ -796,7 +802,8 @@ func (w *World) dungeonInstanceOnLoadLocked(p *Player) uint32 {
 	if !w.inDungeonsLocked(p) {
 		return 0
 	}
-	if id, ok := w.dungeons.resumeIn[p.CharServerID]; ok && w.dungeons.insts[id] != nil {
+	if id, ok := w.dungeons.resumeIn[p.CharServerID]; ok && w.dungeons.insts[id] != nil &&
+		w.raidEntryRefusalLocked(w.dungeons.insts[id], p.CharServerID) == "" {
 		// carried through a restart standing in it: back in it where it stood (keepdungeon.go), left alone a while
 		w.dungeons.movedAt[p.ServerID] = time.Now()
 		return id

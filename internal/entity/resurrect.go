@@ -110,9 +110,10 @@ type RezChance struct {
 	// the chance's time offers its target the way back there, debt or none.
 	// Kept with the chance over a logout and a restart (table charrez; petition
 	// 1130, a GM: "Only the latest rez death location is saved").
-	Placed  bool
-	World   uint8
-	X, Y, Z float32
+	Placed   bool
+	World    uint8
+	X, Y, Z  float32
+	Instance uint32
 }
 
 // live reports whether the chance still counts at now: a debt to give back
@@ -131,10 +132,11 @@ func (c RezChance) returns(now time.Time) bool {
 // form; its Yes is 0x00D4 1) until Until. Caster is the name the prompt
 // gives, kept to show it again (RezOfferDumped).
 type RezReturn struct {
-	World   uint8
-	X, Y, Z float32
-	Until   time.Time
-	Caster  string
+	World    uint8
+	X, Y, Z  float32
+	Instance uint32
+	Until    time.Time
+	Caster   string
 }
 
 // waiting reports whether the offer still waits for its answer at now.
@@ -207,7 +209,8 @@ func (d *SpellDef) Resurrects() int {
 // the character's chance of a rez: the latest death's alone, so an offer still
 // waiting on the earlier one's way back ends with it (playerDiedLocked).
 func (p *Player) noteRezChance(debt int, now time.Time) {
-	p.Rez = RezChance{Debt: max(debt, 0), Until: now.Add(RezWindow), Placed: true, World: p.World, X: p.X, Y: p.Y, Z: p.Z}
+	p.Rez = RezChance{Debt: max(debt, 0), Until: now.Add(RezWindow), Placed: true, World: p.World,
+		X: p.X, Y: p.Y, Z: p.Z, Instance: p.Instance}
 	p.RezReturn = RezReturn{}
 }
 
@@ -361,7 +364,8 @@ func (w *World) SavedRez(id EntityID, now time.Time) (database.RezRow, bool) {
 		return database.RezRow{}, true
 	}
 	c := p.Rez
-	return database.RezRow{Debt: c.Debt, LeftMS: c.Until.Sub(now).Milliseconds(), Placed: c.Placed, World: c.World, X: c.X, Y: c.Y, Z: c.Z}, true
+	return database.RezRow{Debt: c.Debt, LeftMS: c.Until.Sub(now).Milliseconds(), Placed: c.Placed, World: c.World,
+		X: c.X, Y: c.Y, Z: c.Z, Instance: c.Instance}, true
 }
 
 // RestoreRez puts a kept chance of a rez back on the session's player at its
@@ -376,7 +380,7 @@ func (w *World) RestoreRez(sess *session.Session, row database.RezRow, now time.
 	p.Rez = RezChance{}
 	if (row.Debt > 0 || row.Placed) && row.LeftMS > 0 {
 		p.Rez = RezChance{Debt: row.Debt, Until: now.Add(time.Duration(row.LeftMS) * time.Millisecond),
-			Placed: row.Placed, World: row.World, X: row.X, Y: row.Y, Z: row.Z}
+			Placed: row.Placed, World: row.World, X: row.X, Y: row.Y, Z: row.Z, Instance: row.Instance}
 	}
 	return p.Rez.live(now)
 }
@@ -403,7 +407,7 @@ func (w *World) RezOf(id EntityID, now time.Time) (debt int, left time.Duration,
 // for RezOfferFor. Must be called with the lock held.
 func (w *World) offerRezReturnLocked(caster, t *Player, now time.Time) {
 	c := t.Rez
-	t.RezReturn = RezReturn{World: c.World, X: c.X, Y: c.Y, Z: c.Z, Until: now.Add(RezOfferFor)}
+	t.RezReturn = RezReturn{World: c.World, X: c.X, Y: c.Y, Z: c.Z, Instance: c.Instance, Until: now.Add(RezOfferFor)}
 	if w.rezOffer != nil {
 		if ts := w.findSessionByEntityIDLocked(t.ServerID); ts != nil {
 			w.rezOffer(ts, caster.Name)
@@ -479,6 +483,9 @@ func (w *World) TakeDeathPlace(sess *session.Session, now time.Time) (world uint
 		return 0, 0, 0, 0, false
 	}
 	c := p.Rez
+	if !w.reserveRaidReturnLocked(sess, p, c.World, c.Instance) {
+		return 0, 0, 0, 0, false
+	}
 	p.Rez.Placed = false
 	p.RezReturn = RezReturn{}
 	log.Printf("Rez: %s takes a board's way back to (%.1f, %.1f, %.1f) world %d (debt %d, no share given)", p.Name, c.X, c.Y, c.Z, c.World, p.Debt)
@@ -502,6 +509,9 @@ func (w *World) TakeRezReturn(sess *session.Session, yes bool, now time.Time) (w
 		return 0, 0, 0, 0, false
 	}
 	if !yes || r.Until.IsZero() || !now.Before(r.Until) {
+		return 0, 0, 0, 0, false
+	}
+	if !w.reserveRaidReturnLocked(sess, p, r.World, r.Instance) {
 		return 0, 0, 0, 0, false
 	}
 	if p.respawnPending() {

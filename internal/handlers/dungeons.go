@@ -452,6 +452,9 @@ func (ds *Dungeons) takeGroup(p *entity.Player, key, via string, world uint8) {
 			continue
 		}
 		if why, ok := gw.DungeonEnterVia(ms, key, via, ds.now()); !ok {
+			if via == HeroicRaidsName {
+				dungeonsTell(ms, why)
+			}
 			log.Printf("Dungeons: %s stays (%s's entry): %s", m.Name, p.Name, why)
 			continue
 		}

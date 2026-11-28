@@ -150,6 +150,8 @@ type GateTravel struct {
 	// Via is the player a summon brings its traveller to (a Summoning Portal's owner, a Call of the Hero's caster):
 	// the traveller joins Via's dungeon instance as it lands (World.JoinInstanceOf, dungeonsummon.go); 0 for none
 	Via EntityID
+	// RaidEntry reserves a Heroic Raid seat while the door's travel is queued.
+	RaidEntry uint32
 }
 
 // TravelFunc lands a player a gate sends (handlers' teleport, Return Home's

@@ -250,6 +250,7 @@ func (w *World) place(id EntityID, x, y, z float32, world uint8, facing *float32
 	}
 	oldX, oldZ := p.X, p.Z
 	worldChanged = p.World != world
+	w.raidPlacementLocked(p, world)
 	p.World = world
 	p.X, p.Y, p.Z = x, y, z
 	p.VelX, p.VelY, p.VelZ = 0, 0, 0

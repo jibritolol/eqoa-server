@@ -204,7 +204,8 @@ type Player struct {
 	World uint8
 	// Instance is the copy of an instanced world it stands in (homes.go: a home, by its owner's character id);
 	// nothing outside an instanced world
-	Instance uint32
+	Instance  uint32
+	raidEntry uint32 // a seat reserved while travel into a Heroic Raid is queued
 
 	// Coaching / Teleport
 	TeleportCounter   uint32

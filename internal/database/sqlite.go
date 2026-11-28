@@ -217,6 +217,13 @@ func (db *SQLiteDB) initSchema() error {
 		FOREIGN KEY (patternid) REFERENCES itempattern(patternid)
 	);
 
+	CREATE TABLE IF NOT EXISTS charlootlockout (
+		serverid INTEGER NOT NULL REFERENCES characters(serverid) ON DELETE CASCADE,
+		scope TEXT NOT NULL,
+		expires_ms INTEGER NOT NULL,
+		PRIMARY KEY (serverid, scope)
+	);
+
 	-- defaultcharacter
 	CREATE TABLE IF NOT EXISTS defaultcharacter (
 		defaultCharacterID INTEGER PRIMARY KEY AUTOINCREMENT,
